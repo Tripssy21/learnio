@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#154c36">
+<meta name="description" content="Learnio — one place to plan, practice, and grow.">
+<title>Learnio · Your next chapter</title>
+<script>try {const p=localStorage.getItem('learnio.theme')||'system';document.documentElement.dataset.theme=p==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):p;}catch(_) {}</script>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="charts.css">
+</head>
+<body>
+<a class="skip-link" href="#page">Skip to main content</a>
+<div id="app"><main class="empty-state" id="page"><h1>Learnio</h1><p role="status">Loading your learning space…</p></main></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<script src="learning-store.js"></script>
+<script src="api-store.js"></script>
+<script src="csv.js"></script>
+<script src="academy-ui.js"></script>
+<script src="learning-charts.js"></script>
+<script src="journey-plan.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

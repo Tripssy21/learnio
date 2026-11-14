@@ -1,0 +1,185 @@
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { createApplication, readState } = require('./server.js');
+const academy = require('./academy.js');
+const app = createApplication({ dbPath: ':memory:' });
+app.server.listen(0, '127.0.0.1');
+await once(app.server, 'listening');
+const base = `http://127.0.0.1:${app.server.address().port}`;
+function client() {
+  let cookie = '';
+  return {
+    async call(action, ...args) {
+      const response = await fetch(base + (action ? '/api/action' : '/api/session'), { method:action ? 'POST' : 'GET', headers:{ ...(cookie ? {Cookie:cookie} : {}), ...(action ? {'Content-Type':'application/json',Origin:base} : {}) }, ...(action ? {body:JSON.stringify({action,args})} : {}) });
+      if(response.headers.get('set-cookie')) cookie = response.headers.get('set-cookie').split(';')[0];
+      return response.json();
+    },
+    work(action, input) { return this.call('workspace',action,input); }
+  };
+}
+const ok = result => { assert.equal(result.ok,true,result.error); return result; };
+const denied = result => { assert.equal(result.ok,false); return result; };
+const teacher = client(), student = client(), other = client();
+try {
+  const teacherId = ok(await teacher.call('register',{username:'ux_teacher',displayName:'UX Teacher',email:'teacher@example.test',password:'test-password-ux',educator:true})).snapshot.activeUserId;
+  const studentId = ok(await student.call('register',{username:'ux_student',displayName:'UX Student',email:'student@example.test',password:'test-password-ux'})).snapshot.activeUserId;
+  ok(await other.call('register',{username:'ux_other',displayName:'UX Other',email:'other@example.test',password:'test-password-ux',educator:true}));
+  const institutionId = ok(await teacher.work('createInstitution',{name:'UX Test College',username:'ux_college'})).institutionId;
+  const semesterId = ok(await teacher.work('createSemester',{institutionId,title:'Current term',academicYear:'2026–27',startDate:'2026-07-01',endDate:'2026-12-31',status:'current'})).semesterId;
+  const courseId = ok(await teacher.work('createCourse',{institutionId,semesterId,title:'Scoped course',description:'Isolated UX workflow checks'})).courseId;
+  ok(await teacher.work('enroll',{courseId,username:'ux_student',role:'student'}));
+  const materialInput = {courseId,title:'Lesson one',topic:'Arrays',duration:20,description:'Read and reflect',content:'Private course content'};
+  ok(await teacher.work('addMaterial',materialInput));
+  const materialId = ok(await student.call()).academy.courses[0].materials[0].id;
+  const progress = ok(await student.work('saveMaterialProgress',{courseId,materialId,note:'Private learner note',completed:true})).academy.materialProgress[0];
+  assert.ok(progress.completedAt);
+  const savedAt = progress.completedAt;
+  const noteOnly = ok(await student.work('saveMaterialProgress',{courseId,materialId,note:'Revised private note'})).academy.materialProgress[0];
+  assert.equal(noteOnly.completedAt,savedAt,'saving a note does not alter completion');
+  assert.equal(ok(await teacher.call()).academy.materialProgress.length,0,'teachers do not receive private learner notes');
+  denied(await other.work('saveMaterialProgress',{courseId,materialId,completed:true}));
+  denied(await student.work('saveMaterialProgress',{courseId,materialId:'foreign-material',completed:true}));
+  denied(await student.work('saveMaterialProgress',{courseId,materialId,completed:'true'}));
+  denied(await student.work('saveMaterialProgress',{courseId,materialId,note:'a'.repeat(4001)}));
+
+  ok(await teacher.work('createAssignment',{courseId,title:'Explain tradeoffs',description:'Give evidence',dueDate:'2026-12-01',maxPoints:10}));
+  const assignmentId = ok(await student.call()).academy.assignments[0].id;
+  const submitted = ok(await student.work('submitAssignment',{assignmentId,body:'Saved learner work'})).academy.submissions[0];
+  assert.equal(submitted.canUpdate,true);
+  ok(await teacher.work('grade',{submissionId:submitted.id,score:9,feedback:'Unreleased feedback',released:false}));
+  const privateGrade = ok(await student.call()).academy.submissions[0];
+  assert.equal(privateGrade.canUpdate,false);
+  assert.equal(privateGrade.assessmentStatus,'awaiting-release');
+  for(const key of ['score','feedback','gradedAt','gradeHistory']) assert.equal(privateGrade[key],undefined,`${key} remains secret before release`);
+  denied(await student.work('submitAssignment',{assignmentId,body:'Should not overwrite graded work'}));
+  ok(await teacher.work('grade',{submissionId:submitted.id,score:9,feedback:'Released feedback',released:true}));
+  assert.equal(ok(await student.call()).academy.submissions[0].assessmentStatus,'released');
+
+  const quizInput = {courseId,title:'Official quiz',questions:[{prompt:'Choose A',options:['A','B','C','D'],answer:0,explanation:'First answer'},{prompt:'Choose C',options:['A','B','C','D'],answer:2,explanation:'Third answer'}]};
+  const quizId = ok(await teacher.work('createCourseQuiz',quizInput)).quizId;
+  let quiz = ok(await student.call()).academy.courseQuizzes[0];
+  for(const question of quiz.questions) { assert.equal(question.answer,undefined); assert.equal(question.explanation,undefined); }
+  const answers = {[quiz.questions[0].id]:0};
+  ok(await student.work('saveCourseQuizDraft',{quizId,revision:1,answers}));
+  let resumed = ok(await student.call()).academy;
+  assert.deepEqual(resumed.courseQuizDrafts[0].answers,answers,'draft choices survive a new session snapshot');
+  assert.equal(resumed.courseQuizAttempts.length,0,'saving a draft cannot score an attempt');
+  assert.equal(ok(await teacher.call()).academy.courseQuizDrafts.length,0,'draft choices stay private to their learner');
+  denied(await other.work('saveCourseQuizDraft',{quizId,revision:1,answers}));
+  denied(await student.work('saveCourseQuizDraft',{quizId,revision:0,answers}));
+  denied(await student.work('saveCourseQuizDraft',{quizId,revision:1,answers:{not_a_question:0}}));
+  denied(await student.work('saveCourseQuizDraft',{quizId,revision:1,answers:{[quiz.questions[0].id]:4}}));
+  ok(await student.work('saveCourseQuizDraft',{quizId,revision:1,answers:{}}));
+  denied(await student.work('submitCourseQuiz',{quizId,revision:1,answers:{}}));
+  const attempt = ok(await student.work('submitCourseQuiz',{quizId,revision:1,answers})).academy.courseQuizAttempts[0];
+  assert.equal(attempt.percent,50); assert.equal(attempt.skipped,1);
+  assert.equal(ok(await student.call()).academy.courseQuizDrafts.length,0);
+  denied(await student.work('saveCourseQuizDraft',{quizId,revision:1,answers}));
+  ok(await teacher.work('reviseCourseQuiz',{...quizInput,quizId}));
+  quiz = ok(await student.call()).academy.courseQuizzes[0];
+  ok(await student.work('saveCourseQuizDraft',{quizId,revision:2,answers:{[quiz.questions[0].id]:0}}));
+  ok(await teacher.work('reviseCourseQuiz',{...quizInput,quizId}));
+  assert.equal(ok(await student.call()).academy.courseQuizDrafts.length,0,'old revision drafts cannot prefill new questions');
+  denied(await student.work('submitCourseQuiz',{quizId,revision:2,answers:{[quiz.questions[0].id]:0}}));
+  quiz = ok(await student.call()).academy.courseQuizzes[0];
+  ok(await student.work('submitCourseQuiz',{quizId,revision:3,answers:{[quiz.questions[0].id]:0,[quiz.questions[1].id]:2}}));
+  const eligibility = ok(await student.call()).academy.completionEligibility[0];
+  assert.equal(eligibility.eligible,true); assert.deepEqual(eligibility.blockers,[]);
+  const recordId = ok(await teacher.work('issueCertificate',{courseId,userId:studentId})).certificateId;
+  assert.equal(ok(await student.call()).academy.completionEligibility[0].activeRecordId,recordId);
+
+  const publicId = ok(await teacher.work('createCourse',{title:'Live public course',description:'Live edit policy'})).courseId;
+  ok(await teacher.work('addMaterial',{...materialInput,courseId:publicId}));
+  let published = ok(await teacher.work('publishCourse',{courseId:publicId})).catalogue.find(c => c.id === publicId);
+  const firstVersion = published.version;
+  assert.equal(ok(await teacher.work('publishCourse',{courseId:publicId})).catalogue.find(c => c.id === publicId).version,firstVersion,'publishing an already live version is idempotent');
+  const originalMaterialId = published.items[0].id;
+  published = ok(await teacher.work('updateMaterial',{courseId:publicId,materialId:originalMaterialId,title:'Edited live lesson'})).catalogue.find(c => c.id === publicId);
+  assert.equal(published.version,firstVersion+1); assert.equal(published.items[0].id,originalMaterialId); assert.equal(published.items[0].title,'Edited live lesson');
+  denied(await other.work('updateMaterial',{courseId:publicId,materialId:originalMaterialId,title:'Unauthorized edit'}));
+  const twoLessons = ok(await teacher.work('addMaterial',{...materialInput,courseId:publicId,title:'Lesson two'})).academy.courses.find(c => c.id === publicId).materials;
+  const order = twoLessons.map(m => m.id).reverse();
+  ok(await teacher.work('reorderMaterials',{courseId:publicId,materialIds:order}));
+  assert.deepEqual(ok(await teacher.call()).academy.courses.find(c => c.id === publicId).materials.map(m => m.id),order);
+  denied(await teacher.work('reorderMaterials',{courseId:publicId,materialIds:[order[0],order[0]]}));
+
+  const journeyId = ok(await student.call('createJourney',{title:'Reusable public path',contentIds:[publicId]})).journeyId;
+  const activeItems = ok(await student.call()).snapshot.userData[studentId].journeys.find(j => j.id === journeyId).items;
+  const quizDate = new Date(Date.now()+40*86400000).toISOString().slice(0,10);
+  const scheduledId = ok(await student.call('scheduleQuiz',{journeyId,date:quizDate,startTime:'12:00',minutes:10,topics:['Arrays'],title:'Cancelled personal quiz'})).itemId;
+  ok(await student.call('cancelScheduledQuiz',journeyId,scheduledId));
+  const path1 = ok(await student.work('publishJourney',{journeyId}));
+  const publishedPath = path1.catalogue.find(p => p.id === path1.entryId);
+  assert.deepEqual(publishedPath.outcomes,activeItems.map(i => i.title),'cancelled quiz history is excluded from public content and outcomes');
+  assert.equal(publishedPath.minutes,activeItems.reduce((n,i) => n+i.duration,0));
+  assert.equal(publishedPath.items.length,activeItems.length); assert.equal(publishedPath.tasks,undefined,'personal scheduled tasks are never published');
+  assert.ok(path1.snapshot.userData[studentId].journeys.find(j => j.id === journeyId).items.find(i => i.id === scheduledId).cancelledAt,'publication preserves private cancellation history');
+  const path2 = ok(await student.work('publishJourney',{journeyId}));
+  assert.equal(path2.entryId,path1.entryId); assert.equal(path2.version,2);
+  assert.equal(path2.catalogue.filter(p => p.id === path1.entryId).length,1);
+  const sheetInput = {title:'Practice sheet',description:'Edited owned content',items:[{title:'A problem',topic:'Arrays',duration:10}]};
+  const sheet1 = ok(await student.work('publishSheet',sheetInput));
+  const sheet2 = ok(await student.work('publishSheet',{...sheetInput,entryId:sheet1.entryId,title:'Updated sheet'}));
+  assert.equal(sheet2.entryId,sheet1.entryId); assert.equal(sheet2.version,2);
+  denied(await other.work('publishSheet',{...sheetInput,entryId:sheet1.entryId}));
+  denied(await other.work('publishJourney',{journeyId,entryId:path1.entryId}));
+
+  const studyJourneyId = ok(await student.call('createJourney',{title:'Private coursework preparation'})).journeyId;
+  const officialRecords = state => JSON.stringify(Object.fromEntries(['courses','assignments','submissions','courseQuizzes','courseQuizAttempts','certificates'].map(key => [key,state.academy[key]])));
+  const beforeStudy = officialRecords(readState(app.db));
+  const study = ok(await student.work('planStudyTime',{courseId,materialId,journeyId:studyJourneyId,minutes:35}));
+  const studyJourney = study.snapshot.userData[studentId].journeys.find(j => j.id === studyJourneyId);
+  const studyItem = studyJourney.items.find(i => i.id === study.itemId);
+  assert.equal(study.journeyId,studyJourneyId); assert.equal(studyItem.type,'review');
+  assert.deepEqual(studyItem.studyReference,{courseId,materialId}); assert.equal(studyItem.content,'');
+  assert.equal(studyItem.note,''); assert.equal(studyItem.completedAt,null);
+  assert.equal(studyJourney.tasks.filter(t => t.itemId === study.itemId).reduce((total,t) => total+t.minutes,0),35,'private study time uses the ordinary scheduler');
+  const assignmentStudy = ok(await student.work('planStudyTime',{courseId,assignmentId,journeyId:studyJourneyId,minutes:20}));
+  assert.deepEqual(assignmentStudy.snapshot.userData[studentId].journeys.find(j => j.id === studyJourneyId).items.find(i => i.id === assignmentStudy.itemId).studyReference,{courseId,assignmentId});
+  assert.equal(officialRecords(readState(app.db)),beforeStudy,'planning private study never copies or alters official lesson, assignment, submission, quiz or assessment records');
+  assert.equal(ok(await teacher.call()).snapshot.userData[studentId],undefined,'private planning remains invisible to educators');
+  denied(await other.work('planStudyTime',{courseId,materialId,journeyId:studyJourneyId,minutes:30}));
+  for(const input of [{courseId:publicId,materialId},{materialId:'missing'},{materialId,assignmentId},{assignmentId:'missing'},{materialId,minutes:0},{materialId,minutes:true},{materialId,journeyId:undefined},{materialId,journeyId:'foreign-journey'}]) denied(await student.work('planStudyTime',{courseId,journeyId:studyJourneyId,minutes:30,...input}));
+  denied(await student.call('addStudyReference',studyJourneyId,{title:'Untrusted official source',topic:'Arrays',minutes:30,reference:{courseId,materialId}}));
+  denied(await student.work('publishJourney',{journeyId:studyJourneyId}));
+  ok(await student.call('updateJourney',studyJourneyId,{status:'paused'}));
+  const beforePaused = JSON.stringify(readState(app.db));
+  denied(await student.work('planStudyTime',{courseId,materialId,journeyId:studyJourneyId,minutes:30}));
+  assert.equal(JSON.stringify(readState(app.db)),beforePaused,'failed planning is atomic and keeps the prior saved state');
+  ok(await student.call('updateJourney',studyJourneyId,{status:'active'}));
+
+  ok(await teacher.work('updateSemester',{institutionId,semesterId,title:'Completed term',academicYear:'2026–27',startDate:'2026-07-01',endDate:'2026-12-31',status:'completed'}));
+  const history = ok(await student.call()).academy;
+  assert.equal(history.courses.find(c => c.id === courseId).canSubmit,false);
+  assert.equal(history.courses.find(c => c.id === courseId).isCompletedSemester,true);
+  assert.equal(history.materialProgress[0].completedAt,savedAt);
+  for(const [action,input] of [['saveMaterialProgress',{courseId,materialId,note:'Should not change'}],['saveCourseQuizDraft',{quizId,revision:3,answers:{}}],['submitAssignment',{assignmentId,body:'Read-only'}],['post',{courseId,body:'Read-only'}]]) assert.match(denied(await student.work(action,input)).error,/semester is completed/);
+  ok(await teacher.work('grade',{submissionId:submitted.id,score:10,feedback:'Historical correction',reason:'Confirmed rubric correction',released:true}));
+  ok(await teacher.work('post',{courseId,body:'Educator historical clarification'}));
+  const persisted = readState(app.db);
+  assert.equal(persisted.userData[studentId].materialProgress[0].note,'Revised private note');
+  assert.equal(academy.snapshot(JSON.parse(JSON.stringify(persisted)),studentId).submissions[0].score,10,'records survive serialization and retain teacher corrections');
+  const legacy = JSON.parse(JSON.stringify(persisted));
+  legacy.academy.semesters.find(s => s.id === semesterId).status = 'current';
+  const legacySubmission = legacy.academy.submissions[0]; delete legacySubmission.gradedAt; legacySubmission.released = false;
+  const legacyView = academy.snapshot(legacy,studentId).submissions[0];
+  assert.equal(legacyView.canUpdate,false,'a legacy scored record stays locked without a grading timestamp');
+  assert.equal(legacyView.assessmentStatus,'awaiting-release'); assert.equal(legacyView.score,undefined);
+  assert.equal(academy.action(legacy,studentId,'submitAssignment',[{assignmentId,body:'Do not overwrite historical grade'}]).ok,false);
+  ok(academy.action(legacy,teacherId,'grade',[{submissionId:legacySubmission.id,score:9,feedback:'Correct legacy record',released:true}]));
+  assert.equal(legacySubmission.gradeHistory.at(-1).score,10,'legacy corrections retain the prior score');
+  delete legacy.academy.courseQuizAttempts.find(a => a.quizId === quizId && a.revision === 3).percent;
+  assert.equal(academy.snapshot(legacy,studentId).completionEligibility.find(e => e.courseId === courseId).eligible,false,'a legacy assessment without an authoritative score cannot establish eligibility');
+  persisted.userData[studentId].memberships[0].status = 'revoked';
+  const revoked = academy.snapshot(persisted,studentId);
+  assert.equal(revoked.materialProgress.some(p => p.courseId === courseId),false);
+  assert.equal(revoked.courseQuizDrafts.some(p => p.courseId === courseId),false);
+  assert.equal(revoked.completionEligibility.some(p => p.courseId === courseId),false);
+  assert.equal(academy.snapshot(persisted,teacherId).materialProgress.length,0);
+  console.log('UX academy checks passed: saved quiz drafts, key secrecy, private lesson progress/notes, truthful submission state, eligibility, completed-term guards, live edits, stable publication revisions, authorized private study planning, atomic rollback and serialized persistence.');
+} finally {
+  await app.close();
+}

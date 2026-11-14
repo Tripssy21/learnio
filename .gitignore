@@ -1,0 +1,36 @@
+node_modules/
+data/
+.data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+tmp/
+
+# Local agent and editor configuration
+AGENTS.md
+CLAUDE.md
+.agents/
+.codex/
+.claude/
+.clinerules/
+.cursor/
+.vscode/
+.idea/
+
+# Secrets, local databases, and logs
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.bak
+
+# Generated reviews, exports, and historical material
+output/
+ux-eval/
+_archive/
+security_best_practices_report.md
+PRODUCT_FEATURES.md
+docs/build_blueprint.py
