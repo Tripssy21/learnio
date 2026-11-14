@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: learnio
+    runtime: node
+    branch: main
+    plan: 0.5c-512mb
+    buildCommand: npm test
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: HOST
+        value: 0.0.0.0
+      - key: LEARNIO_DB
+        value: /var/data/learnio.sqlite
+    disk:
+      name: learnio-data
+      mountPath: /var/data
+      sizeGB: 1

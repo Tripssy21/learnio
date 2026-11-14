@@ -346,7 +346,7 @@ function parseOptions(args = process.argv.slice(2)) {
   const option = name => { const index = args.indexOf('--' + name); return index < 0 ? undefined : args[index + 1]; };
   const port = Number(option('port') || process.env.PORT || 4173);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('Use a valid port from 1 to 65535.');
-  return { port, host: process.env.HOST || '127.0.0.1', publicOrigin: process.env.PUBLIC_ORIGIN || '', dbPath: path.resolve(option('db') || process.env.LEARNIO_DB || path.join(__dirname, 'data', 'learnio.sqlite')) };
+  return { port, host: process.env.HOST || '127.0.0.1', publicOrigin: process.env.PUBLIC_ORIGIN || process.env.RENDER_EXTERNAL_URL || '', dbPath: path.resolve(option('db') || process.env.LEARNIO_DB || path.join(__dirname, 'data', 'learnio.sqlite')) };
 }
 function startApplication() {
   const options = parseOptions();

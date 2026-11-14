@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { seedDatabase, cleanDatabase, TEST_DATA_TAG } from './scripts/test-data.mjs';
 
 const require = createRequire(import.meta.url);
-const { createApplication, readState } = require('./server.js');
+const { createApplication, readState, parseOptions } = require('./server.js');
 const CSV = require('./csv.js');
 assert.deepEqual(CSV.parse('\uFEFFusername,notes\r\nriya,"A comma, a line\nbreak and ""quotes"""\r\n'), [['username', 'notes'], ['riya', 'A comma, a line\nbreak and "quotes"']]);
 assert.throws(() => CSV.parse('name\n"unclosed'), /not closed/);
@@ -45,6 +45,25 @@ function client() {
 function ok(response) { assert.equal(response.status, 200, JSON.stringify(response.data)); assert.equal(response.data.ok, true); return response.data; }
 function current(snapshot) { return snapshot.userData[snapshot.activeUserId]; }
 try {
+  const savedEnvironment = { ...process.env };
+  try {
+    delete process.env.PUBLIC_ORIGIN;
+    delete process.env.RENDER_EXTERNAL_URL;
+    delete process.env.HOST;
+    assert.equal(parseOptions([]).publicOrigin, '');
+    assert.equal(parseOptions([]).host, '127.0.0.1');
+    process.env.RENDER_EXTERNAL_URL = 'https://learnio.onrender.com';
+    process.env.HOST = '0.0.0.0';
+    assert.equal(parseOptions([]).publicOrigin, process.env.RENDER_EXTERNAL_URL);
+    assert.equal(parseOptions([]).host, '0.0.0.0');
+    process.env.PUBLIC_ORIGIN = 'https://learnio.example';
+    assert.equal(parseOptions([]).publicOrigin, process.env.PUBLIC_ORIGIN, 'an explicit public origin overrides the Render URL');
+  } finally {
+    for (const key of ['PUBLIC_ORIGIN', 'RENDER_EXTERNAL_URL', 'HOST']) {
+      if (savedEnvironment[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnvironment[key];
+    }
+  }
   for (const publicOrigin of ['http://learnio.example', 'https://user:pass@learnio.example', 'https://learnio.example/path', 'https://learnio.example/?q=1', 'https://learnio.example/#fragment']) {
     assert.throws(() => createApplication({ dbPath, publicOrigin }), /PUBLIC_ORIGIN/);
   }
@@ -267,7 +286,7 @@ try {
   const previewPort = app.server.address().port;
   await app.close();
   app = null;
-  previewProcess = spawn(process.execPath, ['server.js', '--port', String(previewPort), '--db', dbPath], { cwd: root, env: { ...process.env, HOST: '127.0.0.1', PUBLIC_ORIGIN: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  previewProcess = spawn(process.execPath, ['server.js', '--port', String(previewPort), '--db', dbPath], { cwd: root, env: { ...process.env, HOST: '127.0.0.1', PUBLIC_ORIGIN: '', RENDER_EXTERNAL_URL: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
   const startup = await Promise.race([
     once(previewProcess.stdout, 'data').then(([data]) => data.toString()),
     once(previewProcess, 'exit').then(([code]) => { throw Error('Preview exited before startup: ' + code); })

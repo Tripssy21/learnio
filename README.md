@@ -24,6 +24,10 @@ node server.js --port 4173 --db C:\path\to\learnio.sqlite
 
 ## Hosting on Render
 
+The repository includes `render.yaml`. After pushing it to GitHub, open the Render dashboard, choose **New → Blueprint**, and connect this repository. Review the paid 0.5 CPU / 512 MB service and 1 GB persistent disk before deploying. The Blueprint sets the Node version, host, database path, health check, and commands listed below. The server automatically uses Render's assigned `RENDER_EXTERNAL_URL` as its public origin; no placeholder URL needs to be entered. Open the resulting Render URL once deployment is live. Pushing this file does not create a Render service or activate a backend on the existing Netlify site.
+
+For manual setup instead of a Blueprint:
+
 Create a Node web service from this repository's `main` branch. Leave the root directory blank when `package.json` is at the repository root. Set the build command to `npm test`, the start command to `npm start`, and the health check path to `/api/health`.
 
 Attach a persistent disk to a paid service at `/var/data`, then set these environment variables:
@@ -33,9 +37,9 @@ Attach a persistent disk to a paid service at `/var/data`, then set these enviro
 | `NODE_VERSION` | `24` |
 | `HOST` | `0.0.0.0` |
 | `LEARNIO_DB` | `/var/data/learnio.sqlite` |
-| `PUBLIC_ORIGIN` | The service's exact HTTPS origin, such as `https://your-service.onrender.com` |
+| `PUBLIC_ORIGIN` | Optional override for the automatic Render URL; use the exact HTTPS origin for a custom domain |
 
-Use the URL assigned by Render, not the example above. `PUBLIC_ORIGIN` must not include credentials, a path, query, or fragment. The server accepts that host, enforces the configured origin on mutations, and marks HTTPS session cookies Secure. It does not trust forwarded host/protocol headers. Without hosting configuration, the server retains its loopback defaults. Serve the frontend and API together from the Render URL.
+`PUBLIC_ORIGIN`, when set, must not include credentials, a path, query, or fragment. The server accepts that host, enforces the configured origin on mutations, and marks HTTPS session cookies Secure. It does not trust forwarded host/protocol headers. Without hosting configuration, the server retains its loopback defaults. Serve the frontend and API together from the Render URL.
 
 The hosted database starts empty; local records are not uploaded by Git. Only database files on the mounted disk persist across restarts and redeploys. Keep one application instance with this SQLite storage model. Verify `/api/health`, account creation/login/logout, and saved work after a restart. Set up consistent SQLite backups and test recovery separately; persistent storage alone is not a backup or a production-readiness guarantee.
 
