@@ -22,6 +22,23 @@ node server.js --port 4173 --db C:\path\to\learnio.sqlite
 
 `PORT` and `LEARNIO_DB` environment variables provide the same configuration. Keep the SQLite database to retain records across server restarts; browser site data is no longer the learning-data store.
 
+## Hosting on Render
+
+Create a Node web service from this repository's `main` branch. Leave the root directory blank when `package.json` is at the repository root. Set the build command to `npm test`, the start command to `npm start`, and the health check path to `/api/health`.
+
+Attach a persistent disk to a paid service at `/var/data`, then set these environment variables:
+
+| Variable | Value |
+| --- | --- |
+| `NODE_VERSION` | `24` |
+| `HOST` | `0.0.0.0` |
+| `LEARNIO_DB` | `/var/data/learnio.sqlite` |
+| `PUBLIC_ORIGIN` | The service's exact HTTPS origin, such as `https://your-service.onrender.com` |
+
+Use the URL assigned by Render, not the example above. `PUBLIC_ORIGIN` must not include credentials, a path, query, or fragment. The server accepts that host, enforces the configured origin on mutations, and marks HTTPS session cookies Secure. It does not trust forwarded host/protocol headers. Without hosting configuration, the server retains its loopback defaults. Serve the frontend and API together from the Render URL.
+
+The hosted database starts empty; local records are not uploaded by Git. Only database files on the mounted disk persist across restarts and redeploys. Keep one application instance with this SQLite storage model. Verify `/api/health`, account creation/login/logout, and saved work after a restart. Set up consistent SQLite backups and test recovery separately; persistent storage alone is not a backup or a production-readiness guarantee.
+
 ## Optional test accounts
 
 Test accounts are created only by the explicit seed script:

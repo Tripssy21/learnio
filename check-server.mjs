@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { once } from 'node:events';
+import { request as httpRequest } from 'node:http';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
@@ -44,7 +45,42 @@ function client() {
 function ok(response) { assert.equal(response.status, 200, JSON.stringify(response.data)); assert.equal(response.data.ok, true); return response.data; }
 function current(snapshot) { return snapshot.userData[snapshot.activeUserId]; }
 try {
+  for (const publicOrigin of ['http://learnio.example', 'https://user:pass@learnio.example', 'https://learnio.example/path', 'https://learnio.example/?q=1', 'https://learnio.example/#fragment']) {
+    assert.throws(() => createApplication({ dbPath, publicOrigin }), /PUBLIC_ORIGIN/);
+  }
+  app = createApplication({ dbPath: path.join(directory, 'hosted.sqlite'), publicOrigin: 'https://learnio.example' });
+  app.server.listen(0, '127.0.0.1');
+  await once(app.server, 'listening');
+  const hostedRequest = (route, body, headers = {}) => new Promise((resolve, reject) => {
+    const request = httpRequest({ hostname: '127.0.0.1', port: app.server.address().port, path: route, method: body ? 'POST' : 'GET', headers: { Host: 'learnio.example', ...(body ? { Origin: 'https://learnio.example', 'Content-Type': 'application/json' } : {}), ...headers } }, response => {
+      let text = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { text += chunk; });
+      response.on('error', reject);
+      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, data: JSON.parse(text) }));
+    });
+    request.on('error', reject);
+    request.end(body ? JSON.stringify(body) : undefined);
+  });
+  assert.equal((await hostedRequest('/api/health')).status, 200);
+  assert.equal((await hostedRequest('/api/session')).data.ok, true);
+  assert.equal((await hostedRequest('/api/health', null, { Host: 'attacker.example', 'X-Forwarded-Host': 'learnio.example' })).status, 403);
+  const hostedLogin = { action: 'login', args: ['missing-user', 'incorrect-password'] };
+  assert.equal((await hostedRequest('/api/action', hostedLogin, { Origin: 'https://attacker.example' })).status, 403);
+  assert.equal((await hostedRequest('/api/action', hostedLogin, { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  assert.equal((await hostedRequest('/api/action', hostedLogin, { Origin: 'http://learnio.example', 'X-Forwarded-Proto': 'https' })).status, 403);
+  const hostedRegistration = await hostedRequest('/api/action', { action: 'register', args: [{ username: 'hosted_learner', displayName: 'Hosted Learner', email: 'hosted@example.test', password: 'hosted-test-password' }] });
+  assert.equal(hostedRegistration.status, 200);
+  const hostedCookie = hostedRegistration.headers['set-cookie'][0];
+  assert.match(hostedCookie, /; Secure$/);
+  assert.match(hostedCookie, /; HttpOnly; SameSite=Strict;/);
+  assert.equal((await hostedRequest('/api/session', null, { Cookie: hostedCookie.split(';')[0] })).data.snapshot.activeUserId, hostedRegistration.data.snapshot.activeUserId);
+  const hostedLogout = await hostedRequest('/api/action', { action: 'logout', args: [] }, { Cookie: hostedCookie.split(';')[0] });
+  assert.match(hostedLogout.headers['set-cookie'][0], /Max-Age=0; Secure$/);
+  await app.close();
+  app = null;
   await start();
+  assert.equal((await hostedRequest('/api/health')).status, 403, 'local mode rejects public host headers');
   const planScript = await fetch(base + '/journey-plan.js');
   assert.equal(planScript.status, 200, 'the checkpoint helper is served to the browser');
   assert.match(await planScript.text(), /LearnioPlan/);
@@ -231,13 +267,13 @@ try {
   const previewPort = app.server.address().port;
   await app.close();
   app = null;
-  previewProcess = spawn(process.execPath, ['tmp/preview.cjs', '--port', String(previewPort), '--db', dbPath], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+  previewProcess = spawn(process.execPath, ['server.js', '--port', String(previewPort), '--db', dbPath], { cwd: root, env: { ...process.env, HOST: '127.0.0.1', PUBLIC_ORIGIN: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
   const startup = await Promise.race([
     once(previewProcess.stdout, 'data').then(([data]) => data.toString()),
     once(previewProcess, 'exit').then(([code]) => { throw Error('Preview exited before startup: ' + code); })
   ]);
   assert.match(startup, /Learnio is running/);
-  assert.equal((await fetch(base + '/')).status, 200, 'the historical preview command serves the application');
+  assert.equal((await fetch(base + '/')).status, 200, 'the server entry point serves the application');
   for (const route of ['/data/learnio.sqlite', '/data/learnio.sqlite.backup.json', '/server.js', '/tmp/preview.cjs']) assert.equal((await fetch(base + route)).status, 404, 'preview uses the same private-file restrictions');
   previewProcess.kill();
   await once(previewProcess, 'exit');

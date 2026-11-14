@@ -189,6 +189,10 @@ async function readBody(req) {
 }
 
 function createApplication(options = {}) {
+  const publicOrigin = options.publicOrigin ? new URL(options.publicOrigin) : null;
+  if (publicOrigin && (publicOrigin.protocol !== 'https:' || publicOrigin.username || publicOrigin.password || publicOrigin.pathname !== '/' || publicOrigin.search || publicOrigin.hash)) {
+    throw Error('PUBLIC_ORIGIN must be an HTTPS origin without credentials, a path, query, or fragment.');
+  }
   const rootDir = options.rootDir || __dirname;
   const db = openDatabase(options.dbPath || path.join(rootDir, 'data', 'learnio.sqlite'));
   const academy = options.academy === undefined ? loadAcademy(rootDir) : options.academy;
@@ -200,8 +204,11 @@ function createApplication(options = {}) {
     headers(res);
     try {
       let origin;
-      try { origin = new URL('http://' + req.headers.host); } catch { return send(res, 400, { ok: false, error: 'Invalid Host header.' }); }
-      if (!['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname) || Number(origin.port || 80) !== req.socket.localPort) return send(res, 403, { ok: false, error: 'This Learnio server accepts its local address only.' });
+      try { origin = publicOrigin || new URL('http://' + req.headers.host); } catch { return send(res, 400, { ok: false, error: 'Invalid Host header.' }); }
+      const allowedHost = publicOrigin
+        ? String(req.headers.host || '').toLowerCase() === publicOrigin.host
+        : ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname) && Number(origin.port || 80) === req.socket.localPort;
+      if (!allowedHost) return send(res, 403, { ok: false, error: 'This Learnio server accepts its configured address only.' });
       const url = new URL(req.url, origin);
       if (url.pathname === '/api/health' && req.method === 'GET') return send(res, 200, { ok: true, storage: 'sqlite' });
       if (url.pathname === '/api/session' && req.method === 'GET') {
@@ -308,7 +315,7 @@ function createApplication(options = {}) {
             }
             const payload = snapshotPayload(state, sessionUserId, academy);
             db.exec('COMMIT');
-            if (sessionCookie) res.setHeader('Set-Cookie', sessionCookie);
+            if (sessionCookie) res.setHeader('Set-Cookie', sessionCookie + (origin.protocol === 'https:' ? '; Secure' : ''));
             return send(res, 200, { ...result, ok: true, ...payload });
           } catch (error) {
             try { db.exec('ROLLBACK'); } catch {}
@@ -339,12 +346,12 @@ function parseOptions(args = process.argv.slice(2)) {
   const option = name => { const index = args.indexOf('--' + name); return index < 0 ? undefined : args[index + 1]; };
   const port = Number(option('port') || process.env.PORT || 4173);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('Use a valid port from 1 to 65535.');
-  return { port, dbPath: path.resolve(option('db') || process.env.LEARNIO_DB || path.join(__dirname, 'data', 'learnio.sqlite')) };
+  return { port, host: process.env.HOST || '127.0.0.1', publicOrigin: process.env.PUBLIC_ORIGIN || '', dbPath: path.resolve(option('db') || process.env.LEARNIO_DB || path.join(__dirname, 'data', 'learnio.sqlite')) };
 }
 function startApplication() {
   const options = parseOptions();
   const app = createApplication(options);
-  app.server.listen(options.port, '127.0.0.1', () => console.log('Learnio is running at http://127.0.0.1:' + options.port));
+  app.server.listen(options.port, options.host, () => console.log('Learnio is running at ' + (options.publicOrigin || 'http://' + options.host + ':' + options.port)));
   app.server.on('error', error => { console.error('Learnio could not start:', error.message); process.exitCode = 1; app.db.close(); });
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => app.close().then(() => process.exit()));
 }
